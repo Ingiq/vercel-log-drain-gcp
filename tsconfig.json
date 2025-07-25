@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "es2020",         
+    "module": "commonjs",       
+    "outDir": "./dist",         
+    "rootDir": "./src",         
+    "strict": true,
+    "esModuleInterop": true,    /* Enable compatibility with CommonJS modules */
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true, /* Ensure that casing of file names is consistent */
+    "resolveJsonModule": true,  /* Allows importing modules with a '.json' extension */
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

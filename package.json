@@ -1,12 +1,36 @@
 {
   "name": "vercel-log-drain-gcp",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "build": "tsc",
+    "start": "functions-framework --source=dist/ --target=vercelLogDrain",
+    "lint": "eslint 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit"
   },
-  "keywords": [],
-  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ingiq/vercel-log-drain-gcp.git"
+  },
+  "author": "Tatsuo Nomura",
   "license": "ISC",
-  "description": ""
+  "bugs": {
+    "url": "https://github.com/Ingiq/vercel-log-drain-gcp/issues"
+  },
+  "homepage": "https://github.com/Ingiq/vercel-log-drain-gcp#readme",
+  "description": "",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^4.0.0",
+    "@google-cloud/logging": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@typescript-eslint/eslint-plugin": "^7.16.0",
+    "@typescript-eslint/parser": "^7.16.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^8.57.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
 }
