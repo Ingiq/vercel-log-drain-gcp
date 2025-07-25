@@ -1,0 +1,12 @@
+node_modules
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+npm-debug.log
+.nyc_output
+coverage
+.env*
+src/**/*.test.ts
+vitest.config.ts

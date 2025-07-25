@@ -21,9 +21,9 @@ interface LogMetadata {
 }
 
 // Initialize Google Cloud Logging client
-// The projectId is usually auto-detected in Cloud Functions (from GOOGLE_CLOUD_PROJECT env var),
+// The projectId is auto-detected from GOOGLE_CLOUD_PROJECT env var in Cloud Run/Functions,
 // but it's good practice to provide it or use an environment variable for clarity.
-const logging = new Logging({ projectId: process.env.GCP_PROJECT_ID });
+const logging = new Logging({ projectId: process.env.GOOGLE_CLOUD_PROJECT });
 const log = logging.log('vercel-logs'); // Define a specific log name in GCP
 
 const mapVercelSeverityToGCP = (log: VercelLog): string => {
@@ -45,22 +45,31 @@ const mapVercelSeverityToGCP = (log: VercelLog): string => {
 };
 
 export const vercelLogDrain: HttpFunction = async (req, res) => {
-  // --- 1. Vercel Endpoint Verification (Crucial!) ---
+  console.log({ env: process.env });
+  const verificationKey = process.env.VERCEL_VERIFICATION_KEY;
+  if (!verificationKey) {
+    console.error('VERCEL_VERIFICATION_KEY is not set. Aborting.');
+    return res.status(500).send('Server Error: VERCEL_VERIFICATION_KEY is not set.');
+  }
+  const secret = process.env.VERCEL_LOG_DRAIN_SECRET;
+  if (!secret) {
+    console.error('VERCEL_LOG_DRAIN_SECRET is not set. Aborting.');
+    return res.status(500).send('Server Error: VERCEL_LOG_DRAIN_SECRET is not set.');
+  }
+
+  // Vercel Endpoint Verification ---
   // Vercel sends this header during the initial setup to verify ownership.
   // Your function must respond with the same header and a 200 OK.
   const vercelVerifyHeader = req.headers['x-vercel-verify'];
-  const verificationKey = process.env.VERCEL_VERIFICATION_KEY;
-  
   if (vercelVerifyHeader && typeof vercelVerifyHeader === 'string' && verificationKey && vercelVerifyHeader === verificationKey) {
     console.log('Vercel verification request received.');
     res.setHeader('x-vercel-verify', verificationKey);
     return res.status(200).send('OK');
   }
 
-  // --- 2. Verify Vercel Signature (Highly Recommended for Security) ---
+  // Verify Vercel Signature
   // This ensures the logs are genuinely coming from Vercel and haven't been tampered with.
   const vercelSignature = req.headers['x-vercel-signature'];
-  const secret = process.env.VERCEL_LOG_DRAIN_SECRET;
 
   if (!vercelSignature || typeof vercelSignature !== 'string' || !secret) {
     console.error('Missing Vercel signature or secret. Aborting.');
@@ -72,7 +81,7 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
     console.error('Invalid signature format.');
     return res.status(400).send('Bad Request: Invalid signature format');
   }
-  
+
   const [algorithm, hash] = vercelSignature.split('=', 2);
 
   if (algorithm !== 'sha1' || !hash) {
@@ -119,7 +128,7 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
         console.error('Failed to parse log line:', line, parseError);
         throw new Error(`Invalid JSON in log line: ${parseError}`);
       }
-      
+
       const metadata: LogMetadata = {
         resource: { type: 'global' },
         severity: mapVercelSeverityToGCP(item),
@@ -131,6 +140,18 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
     await log.write(entries);
     return res.status(200).send('Logs written to Google Cloud Logging');
   } catch (error) {
+    const errorMessage = (error as Error).message;
+
+    // Check if it's a Google Cloud authentication error
+    if (errorMessage.includes('invalid_grant') || errorMessage.includes('Getting metadata from plugin failed')) {
+      console.error('❌ Google Cloud authentication failed. Please run:');
+      console.error('   gcloud auth login');
+      console.error('   gcloud config set project YOUR_PROJECT_ID');
+      console.error('   gcloud auth application-default login');
+      console.error('Error details:', error);
+      return res.status(500).send('Server Error: Google Cloud authentication required. Please check server logs for setup instructions.');
+    }
+
     console.error('Error processing logs:', error);
     return res.status(500).send('Internal Server Error');
   }

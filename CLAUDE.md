@@ -46,5 +46,88 @@ The main export is `vercelLogDrain`, an HTTP Cloud Function that:
 
 ## Testing
 - Uses Vitest as the testing framework
-- Test file: `src/index.test.ts` (currently empty)
+- Test file: `src/index.test.ts` - 20 comprehensive tests covering all functionality
 - Coverage reporting configured for text, JSON, and HTML formats
+
+## Local Development
+
+### Functions Framework (Recommended)
+The simplest way to run locally using Google Cloud Functions Framework:
+
+1. **Setup Google Cloud authentication:**
+   ```bash
+   # Install Google Cloud SDK if not already installed
+   # https://cloud.google.com/sdk/docs/install
+   
+   # Authenticate with your Google Cloud account
+   gcloud auth login
+   
+   # Set your default project (must have Cloud Logging API enabled)
+   gcloud config set project YOUR_PROJECT_ID
+   
+   # Create application default credentials for local development
+   gcloud auth application-default login
+   ```
+
+2. **Setup environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your values (use the same project ID from step 1)
+   ```
+
+3. **Start development:**
+   ```bash
+   npm run dev
+   ```
+
+4. **Access:** http://localhost:8080
+
+Functions Framework automatically loads `.env` and uses your GCP credentials to write logs to Cloud Logging!
+
+### Development Commands
+- `npm run dev` - Build and start with Functions Framework
+- `npm run build` - Build TypeScript only
+- `npm start` - Start Functions Framework (requires prior build)
+
+### Testing Locally
+Test your running instance with simulated Vercel requests:
+
+```bash
+# Start the server first
+npm run dev
+
+# In another terminal, run tests
+npm run test:local                           # Test localhost:8080
+npm run test:local:remote https://your-url  # Test remote endpoint
+```
+
+The test script will:
+- ✅ Test Vercel verification flow
+- ✅ Send realistic log data with proper HMAC signatures  
+- ✅ Test error scenarios (invalid signatures, malformed JSON)
+- ✅ Verify batch log processing
+
+### Alternative: Docker
+For production-like testing:
+- `npm run docker:build && npm run docker:run` - Uses Docker with `.env` file
+
+## Production Deployment
+
+### Cloud Run Deployment
+Deploy to Google Cloud Run using the provided scripts:
+
+**Prerequisites:**
+- Google Cloud SDK installed and authenticated
+- Docker installed locally
+- `GOOGLE_CLOUD_PROJECT` environment variable set
+
+**Deploy Commands:**
+- `npm run deploy` - Full deployment (build + deploy)
+- `npm run deploy:build` - Build container image only
+- `npm run deploy:run` - Deploy to Cloud Run only
+
+**Environment Variables for Cloud Run:**
+Set these in Cloud Run service configuration:
+- `VERCEL_VERIFICATION_KEY` - For endpoint verification  
+- `VERCEL_LOG_DRAIN_SECRET` - For signature validation
+- `GOOGLE_CLOUD_PROJECT` - Auto-set by Cloud Run, but can override if needed
