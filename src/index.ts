@@ -45,78 +45,55 @@ const mapVercelSeverityToGCP = (log: VercelLog): string => {
 };
 
 export const vercelLogDrain: HttpFunction = async (req, res) => {
-  console.log({ env: process.env });
-  const verificationKey = process.env.VERCEL_VERIFICATION_KEY;
-  if (!verificationKey) {
-    console.error('VERCEL_VERIFICATION_KEY is not set. Aborting.');
-    return res.status(500).send('Server Error: VERCEL_VERIFICATION_KEY is not set.');
-  }
-  const secret = process.env.VERCEL_LOG_DRAIN_SECRET;
-  if (!secret) {
-    console.error('VERCEL_LOG_DRAIN_SECRET is not set. Aborting.');
-    return res.status(500).send('Server Error: VERCEL_LOG_DRAIN_SECRET is not set.');
-  }
-
-  // Vercel Endpoint Verification ---
-  // Vercel sends this header during the initial setup to verify ownership.
-  // Your function must respond with the same header and a 200 OK.
-  const vercelVerifyHeader = req.headers['x-vercel-verify'];
-  if (vercelVerifyHeader && typeof vercelVerifyHeader === 'string' && verificationKey && vercelVerifyHeader === verificationKey) {
-    console.log('Vercel verification request received.');
-    res.setHeader('x-vercel-verify', verificationKey);
-    return res.status(200).send('OK');
-  }
-
-  // Verify Vercel Signature
-  // This ensures the logs are genuinely coming from Vercel and haven't been tampered with.
-  const vercelSignature = req.headers['x-vercel-signature'];
-
-  if (!vercelSignature || typeof vercelSignature !== 'string' || !secret) {
-    console.error('Missing Vercel signature or secret. Aborting.');
-    return res.status(401).send('Unauthorized: Missing signature or secret');
-  }
-
-  // Vercel's signature format is `sha1=HEX_HASH`
-  if (!vercelSignature.includes('=')) {
-    console.error('Invalid signature format.');
-    return res.status(400).send('Bad Request: Invalid signature format');
-  }
-
-  const [algorithm, hash] = vercelSignature.split('=', 2);
-
-  if (algorithm !== 'sha1' || !hash) {
-    console.error('Unsupported signature algorithm or missing hash:', algorithm);
-    return res.status(400).send('Bad Request: Unsupported signature algorithm');
-  }
-
-  // `req.rawBody` contains the raw request body as a Buffer
-  if (!req.rawBody || req.rawBody.length === 0) {
-    console.error('Request body is empty, cannot verify signature.');
-    return res.status(400).send('Bad Request: Empty body');
-  }
-
-  const hmac = crypto.createHmac(algorithm, secret);
-  hmac.update(req.rawBody); // Use the raw buffer
-  const expectedHash = hmac.digest('hex');
-
-  if (hash !== expectedHash) {
-    console.error('Invalid Vercel signature. Aborting.');
-    return res.status(401).send('Unauthorized: Invalid signature');
-  }
-
-  // --- 3. Process Log Entries ---
   if (req.method !== 'POST') {
-    res.status(405).send('Method Not Allowed');
-    return;
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  if (!req.rawBody || req.rawBody.length === 0) {
+    return res.status(400).json({ error: 'Bad Request: Empty body' });
   }
 
   // Vercel sends NDJSON, which means each line is a separate JSON object.
   // `req.rawBody` is a Buffer, convert it to string and split by newline.
   const logLines = req.rawBody.toString('utf8').split('\n').filter((line: string) => line.trim() !== '');
-
   if (!logLines || logLines.length === 0) {
-    res.status(200).send('No logs to process.');
-    return;
+    return res.status(200).json({ message: 'No logs to process.', count: 0 });
+  }
+
+  // Vercel sends an empty log line request during initial setup to verify ownership.
+  // We must respond with the verification key in the x-vercel-verify header.
+  if (logLines.length === 1 && logLines[0] === '{}') {
+    const verificationKey = process.env.VERCEL_VERIFICATION_KEY;
+    if (!verificationKey) {
+      console.error('VERCEL_VERIFICATION_KEY is not set. Aborting.');
+      return res.status(500).json({ error: 'Server Error: VERCEL_VERIFICATION_KEY is not set.' });
+    }
+
+    console.log('Vercel verification request received.');
+    res.setHeader('x-vercel-verify', verificationKey);
+    return res.status(200).json({ message: 'OK' });
+  }
+
+  const secret = process.env.VERCEL_LOG_DRAIN_SECRET;
+  if (!secret) {
+    console.error('VERCEL_LOG_DRAIN_SECRET is not set. Aborting.');
+    return res.status(500).json({ error: 'Server Error: VERCEL_LOG_DRAIN_SECRET is not set.' });
+  }
+
+  // Verify Vercel Signature
+  // This ensures the logs are genuinely coming from Vercel and haven't been tampered with.
+  const vercelSignature = req.headers['x-vercel-signature'];
+  if (!vercelSignature || typeof vercelSignature !== 'string' || !secret) {
+    console.error('Missing Vercel signature or secret. Aborting.');
+    return res.status(401).json({ error: 'Unauthorized: Missing signature or secret' });
+  }
+
+  const hmac = crypto.createHmac('sha1', secret);
+  hmac.update(req.rawBody);
+  const expectedHash = hmac.digest('hex');
+  if (vercelSignature !== expectedHash) {
+    console.error('Invalid Vercel signature. Aborting.');
+    return res.status(401).json({ error: 'Unauthorized: Invalid signature' });
   }
 
   try {
@@ -138,7 +115,7 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
     });
 
     await log.write(entries);
-    return res.status(200).send('Logs written to Google Cloud Logging');
+    return res.status(200).json({ message: 'Logs written to Google Cloud Logging', count: entries.length });
   } catch (error) {
     const errorMessage = (error as Error).message;
 
@@ -149,10 +126,10 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
       console.error('   gcloud config set project YOUR_PROJECT_ID');
       console.error('   gcloud auth application-default login');
       console.error('Error details:', error);
-      return res.status(500).send('Server Error: Google Cloud authentication required. Please check server logs for setup instructions.');
+      return res.status(500).json({ error: 'Server Error: Google Cloud authentication required. Please check server logs for setup instructions.' });
     }
 
     console.error('Error processing logs:', error);
-    return res.status(500).send('Internal Server Error');
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 };

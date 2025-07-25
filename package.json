@@ -5,8 +5,8 @@
   "scripts": {
     "test": "vitest run",
     "build": "tsc",
-    "start": "env-cmd functions-framework --source=dist/ --target=vercelLogDrain --port=${PORT:-8080}",
-    "dev": "npm run build && npm start",
+    "start": "functions-framework --source=dist/ --target=vercelLogDrain --port=${PORT:-8080}",
+    "dev": "npm run build && env-cmd npm start",
     "test:integration": "npx tsx scripts/test-integration.ts",
     "lint": "eslint 'src/**/*.ts'",
     "typecheck": "tsc --noEmit",
@@ -26,7 +26,8 @@
   "description": "",
   "dependencies": {
     "@google-cloud/functions-framework": "^4.0.0",
-    "@google-cloud/logging": "^11.2.0"
+    "@google-cloud/logging": "^11.2.0",
+    "typescript": "^5.8.3"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
@@ -37,7 +38,6 @@
     "env-cmd": "^10.1.0",
     "eslint": "^8.57.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   }
 }

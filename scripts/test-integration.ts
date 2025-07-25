@@ -128,7 +128,7 @@ function loadEnvVars(): EnvVars {
 function createSignature(data: string, secret: string): string {
   const hmac = crypto.createHmac('sha1', secret);
   hmac.update(data);
-  return `sha1=${hmac.digest('hex')}`;
+  return hmac.digest('hex');
 }
 
 // Make HTTP request
@@ -168,15 +168,16 @@ function makeRequest(options: RequestOptions, data?: string): Promise<HttpRespon
 }
 
 // Test functions
-async function testVerification(envVars: EnvVars): Promise<void> {
+async function testVerification(): Promise<void> {
   colorLog('yellow', '📋 Test 1: Vercel Verification');
 
   try {
     const response = await makeRequest({
+      method: 'POST',
       headers: {
-        'x-vercel-verify': envVars.VERCEL_VERIFICATION_KEY
+        'Content-Type': 'text/plain'
       }
-    });
+    }, '{}');
 
     if (response.statusCode === 200) {
       colorLog('green', '✅ Verification successful');
@@ -242,7 +243,7 @@ async function testInvalidSignature(): Promise<void> {
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain',
-        'x-vercel-signature': 'sha1=invalid-signature'
+        'x-vercel-signature': 'invalid-signature'
       }
     }, ndjson);
 
@@ -340,7 +341,7 @@ async function main(): Promise<void> {
 
   const envVars = loadEnvVars();
 
-  await testVerification(envVars);
+  await testVerification();
   await testSampleLogs(envVars);
   await testInvalidSignature();
   await testBatchLogs(envVars);
