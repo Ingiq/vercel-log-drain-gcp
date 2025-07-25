@@ -23,7 +23,7 @@
     "url": "https://github.com/Ingiq/vercel-log-drain-gcp/issues"
   },
   "homepage": "https://github.com/Ingiq/vercel-log-drain-gcp#readme",
-  "description": "",
+  "description": "Forwards Vercel log drain events to Google Cloud Logging.",
   "dependencies": {
     "@google-cloud/functions-framework": "^4.0.0",
     "@google-cloud/logging": "^11.2.0",
