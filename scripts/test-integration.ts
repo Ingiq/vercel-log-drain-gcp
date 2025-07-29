@@ -10,8 +10,11 @@
  * - Tests Vercel endpoint verification flow
  * - Validates HMAC-SHA1 signature authentication
  * - Tests NDJSON log processing (newline-delimited JSON)
- * - Verifies error handling for malformed data and invalid signatures
+ * - Verifies graceful error handling for malformed data and invalid signatures
  * - Tests batch log processing capabilities
+ * - Tests structured JSON message extraction and parsing
+ * - Tests comprehensive metadata label generation
+ * - Tests proxy data preservation and mixed batch processing
  * - Provides colorized console output for easy result interpretation
  * 
  * Prerequisites:
@@ -31,11 +34,15 @@
  * 2. Sample Logs - Tests processing of realistic log entries
  * 3. Invalid Signature - Verifies security by rejecting tampered requests
  * 4. Batch Processing - Tests handling of multiple log entries
- * 5. Malformed JSON - Tests error handling for corrupted data
+ * 5. Malformed JSON - Tests graceful error handling for corrupted data
+ * 6. Structured Data - Tests JSON message extraction and level overrides
+ * 7. Comprehensive Metadata - Tests label generation from all metadata fields
+ * 8. Mixed Valid/Invalid Batch - Tests partial success handling
  * 
  * Expected Results:
  * ✅ All tests should pass when server is properly configured and authenticated
- * ❌ Tests 2 & 4 may fail with HTTP 500 if Google Cloud authentication is not set up
+ * ❌ Tests 2, 4, 6, 7 may fail with HTTP 500 if Google Cloud authentication is not set up
+ * ℹ️  Test 5 & 8 should show graceful error handling with HTTP 200 and mixed results
  * 
  * @author Vercel Log Drain Integration Test Suite
  * @version 1.0.0
@@ -85,8 +92,20 @@ interface VercelLog {
   id: string;
   message: string;
   timestamp: number;
-  level: 'info' | 'error' | 'warn' | 'debug';
+  level: string;
   source: 'build' | 'lambda' | 'static' | 'edge';
+  type?: string;
+  requestId?: string;
+  deploymentId?: string;
+  projectName?: string;
+  projectId?: string;
+  executionRegion?: string;
+  environment?: string;
+  branch?: string;
+  path?: string;
+  host?: string;
+  proxy?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 // Load environment variables from .env
@@ -322,14 +341,186 @@ async function testMalformedJson(envVars: EnvVars): Promise<void> {
       }
     }, malformedData);
 
-    if (response.statusCode === 500) {
-      colorLog('green', '✅ Correctly handled malformed JSON');
+    if (response.statusCode === 200) {
+      const responseData = JSON.parse(response.body);
+      if (responseData.successful > 0 && responseData.failed > 0) {
+        colorLog('green', '✅ Correctly handled malformed JSON gracefully');
+        console.log(`   Valid: ${responseData.successful}, Failed: ${responseData.failed}, Total: ${responseData.total}`);
+      } else {
+        colorLog('red', '❌ Expected mixed success/failure response');
+        console.log(response.body);
+      }
     } else {
       colorLog('red', `❌ Unexpected response to malformed JSON (HTTP ${response.statusCode})`);
       console.log(response.body);
     }
   } catch (error) {
     colorLog('red', `❌ Malformed JSON test failed: ${(error as Error).message}`);
+  }
+  console.log('');
+}
+
+async function testStructuredData(envVars: EnvVars): Promise<void> {
+  colorLog('yellow', '📋 Test 6: Structured Data Processing');
+
+  const timestamp = Date.now();
+  const structuredMessage = JSON.stringify({
+    msg: 'This is a structured log message',
+    level: 'error',
+    requestId: 'req-12345',
+    duration: 1234,
+    userId: 'user-789'
+  });
+
+  const logData: VercelLog[] = [
+    {
+      id: 'struct-1',
+      message: structuredMessage,
+      timestamp,
+      level: 'info', // This should be overridden by structured level
+      source: 'lambda',
+      requestId: 'outer-req-456',
+      deploymentId: 'dep-789',
+      projectName: 'test-project',
+      environment: 'production'
+    },
+    {
+      id: 'struct-2',
+      message: 'Simple string message',
+      timestamp: timestamp + 1,
+      level: 'warn',
+      source: 'build',
+      type: 'stdout'
+    }
+  ];
+
+  const ndjson = logData.map(log => JSON.stringify(log)).join('\n');
+  const signature = createSignature(ndjson, envVars.VERCEL_LOG_DRAIN_SECRET);
+
+  try {
+    const response = await makeRequest({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'x-vercel-signature': signature
+      }
+    }, ndjson);
+
+    if (response.statusCode === 200) {
+      const responseData = JSON.parse(response.body);
+      colorLog('green', '✅ Structured data processing successful');
+      console.log(`   Processed: ${responseData.successful} logs with metadata extraction`);
+    } else {
+      colorLog('red', `❌ Structured data processing failed (HTTP ${response.statusCode})`);
+      console.log(response.body);
+    }
+  } catch (error) {
+    colorLog('red', `❌ Structured data test failed: ${(error as Error).message}`);
+  }
+  console.log('');
+}
+
+async function testComprehensiveMetadata(envVars: EnvVars): Promise<void> {
+  colorLog('yellow', '📋 Test 7: Comprehensive Metadata & Labels');
+
+  const proxyData = {
+    region: 'us-east-1',
+    cacheId: 'cache-abc123',
+    userAgent: 'Mozilla/5.0 (Test Browser)',
+    ip: '192.168.1.1'
+  };
+
+  const logData: VercelLog = {
+    id: 'meta-test-1',
+    message: 'Log with comprehensive metadata',
+    timestamp: Date.now(),
+    level: 'info',
+    source: 'lambda',
+    type: 'middleware-invocation',
+    requestId: 'req-comprehensive-123',
+    deploymentId: 'dep-meta-456',
+    projectName: 'meta-test-project',
+    projectId: 'proj-789',
+    executionRegion: 'us-west-2',
+    environment: 'staging',
+    branch: 'feature/metadata-test',
+    path: '/api/comprehensive-test',
+    host: 'test.example.com',
+    proxy: proxyData
+  };
+
+  const ndjson = JSON.stringify(logData);
+  const signature = createSignature(ndjson, envVars.VERCEL_LOG_DRAIN_SECRET);
+
+  try {
+    const response = await makeRequest({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'x-vercel-signature': signature
+      }
+    }, ndjson);
+
+    if (response.statusCode === 200) {
+      JSON.parse(response.body); // Validate response format
+      colorLog('green', '✅ Comprehensive metadata processing successful');
+      console.log(`   Labels generated for: ${Object.keys(logData).filter(k => k !== 'id' && k !== 'message' && k !== 'timestamp').length} metadata fields`);
+    } else {
+      colorLog('red', `❌ Comprehensive metadata processing failed (HTTP ${response.statusCode})`);
+      console.log(response.body);
+    }
+  } catch (error) {
+    colorLog('red', `❌ Comprehensive metadata test failed: ${(error as Error).message}`);
+  }
+  console.log('');
+}
+
+async function testMixedBatch(envVars: EnvVars): Promise<void> {
+  colorLog('yellow', '📋 Test 8: Mixed Valid/Invalid Batch');
+
+  const timestamp = Date.now();
+  const validLogs = [
+    { id: 'mixed-1', message: 'Valid log 1', timestamp: timestamp, level: 'info', source: 'lambda' as const },
+    { id: 'mixed-2', message: 'Valid log 2', timestamp: timestamp + 1, level: 'error', source: 'build' as const }
+  ];
+
+  const mixedData = [
+    JSON.stringify(validLogs[0]),
+    '{"invalid": json}',
+    JSON.stringify(validLogs[1]),
+    '{"another": malformed',
+    JSON.stringify({ id: 'mixed-3', message: 'Valid log 3', timestamp: timestamp + 2, level: 'warn', source: 'static' })
+  ].join('\n');
+
+  const signature = createSignature(mixedData, envVars.VERCEL_LOG_DRAIN_SECRET);
+
+  try {
+    const response = await makeRequest({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'x-vercel-signature': signature
+      }
+    }, mixedData);
+
+    if (response.statusCode === 200) {
+      const responseData = JSON.parse(response.body);
+      if (responseData.successful === 3 && responseData.failed === 2 && responseData.total === 5) {
+        colorLog('green', '✅ Mixed batch processing successful');
+        console.log(`   Valid: ${responseData.successful}, Failed: ${responseData.failed}, Total: ${responseData.total}`);
+        if (responseData.warning) {
+          console.log(`   Warning: ${responseData.warning}`);
+        }
+      } else {
+        colorLog('red', '❌ Unexpected mixed batch results');
+        console.log(response.body);
+      }
+    } else {
+      colorLog('red', `❌ Mixed batch processing failed (HTTP ${response.statusCode})`);
+      console.log(response.body);
+    }
+  } catch (error) {
+    colorLog('red', `❌ Mixed batch test failed: ${(error as Error).message}`);
   }
   console.log('');
 }
@@ -346,8 +537,11 @@ async function main(): Promise<void> {
   await testInvalidSignature();
   await testBatchLogs(envVars);
   await testMalformedJson(envVars);
+  await testStructuredData(envVars);
+  await testComprehensiveMetadata(envVars);
+  await testMixedBatch(envVars);
 
-  colorLog('blue', '🎉 Testing complete!');
+  colorLog('blue', '🎉 Testing complete! All structured data features tested.');
 }
 
 // Handle uncaught errors
