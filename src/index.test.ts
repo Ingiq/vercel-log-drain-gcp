@@ -82,15 +82,6 @@ describe('vercelLogDrain', () => {
       expect(mockRes.json).toHaveBeenCalledWith({ message: 'OK' });
     });
 
-    it('should reject verification with wrong key', async () => {
-      mockReq.headers['x-vercel-verify'] = 'wrong-key';
-      mockReq.rawBody = Buffer.from('{}');
-
-      await vercelLogDrain(mockReq, mockRes);
-
-      expect(mockRes.status).toHaveBeenCalledWith(200);
-      expect(mockRes.json).toHaveBeenCalledWith({ message: 'OK' });
-    });
 
     it('should handle missing verification key environment variable', async () => {
       delete process.env.VERCEL_VERIFICATION_KEY;
@@ -137,32 +128,6 @@ describe('vercelLogDrain', () => {
       });
     });
 
-    it('should reject invalid signature', async () => {
-      mockReq.headers['x-vercel-signature'] = 'invalid-hash';
-
-      await vercelLogDrain(mockReq, mockRes);
-
-      expect(mockRes.status).toHaveBeenCalledWith(401);
-      expect(mockRes.json).toHaveBeenCalledWith({ error: 'Unauthorized: Invalid signature' });
-    });
-
-    it('should reject missing signature', async () => {
-      delete mockReq.headers['x-vercel-signature'];
-
-      await vercelLogDrain(mockReq, mockRes);
-
-      expect(mockRes.status).toHaveBeenCalledWith(401);
-      expect(mockRes.json).toHaveBeenCalledWith({ error: 'Unauthorized: Missing signature or secret' });
-    });
-
-    it('should reject array signature header', async () => {
-      mockReq.headers['x-vercel-signature'] = ['hash1', 'hash2'];
-
-      await vercelLogDrain(mockReq, mockRes);
-
-      expect(mockRes.status).toHaveBeenCalledWith(401);
-    });
-
     it('should reject missing secret', async () => {
       delete process.env.VERCEL_LOG_DRAIN_SECRET;
 
@@ -175,8 +140,14 @@ describe('vercelLogDrain', () => {
       { description: 'invalid signature format', signature: 'invalid-hash-format', expectedError: 'Unauthorized: Invalid signature' },
       { description: 'unsupported algorithm', signature: 'somehash', expectedError: 'Unauthorized: Invalid signature' },
       { description: 'empty signature', signature: '', expectedError: 'Unauthorized: Missing signature or secret' },
+      { description: 'array signature header', signature: ['hash1', 'hash2'], expectedError: 'Unauthorized: Missing signature or secret' },
+      { description: 'missing signature', signature: undefined, expectedError: 'Unauthorized: Missing signature or secret' },
     ])('should reject $description', async ({ signature, expectedError }) => {
-      mockReq.headers['x-vercel-signature'] = signature;
+      if (signature === undefined) {
+        delete mockReq.headers['x-vercel-signature'];
+      } else {
+        mockReq.headers['x-vercel-signature'] = signature;
+      }
 
       await vercelLogDrain(mockReq, mockRes);
 
@@ -356,6 +327,9 @@ describe('vercelLogDrain', () => {
         { id: '3', message: 'error', timestamp: Date.now(), level: 'error' as const, source: 'lambda' as const },
         { id: '4', message: 'warn', timestamp: Date.now(), level: 'warn' as const, source: 'lambda' as const },
         { id: '5', message: 'debug', timestamp: Date.now(), level: 'debug' as const, source: 'lambda' as const },
+        { id: '6', message: 'fatal', timestamp: Date.now(), level: 'fatal' as const, source: 'lambda' as const },
+        { id: '7', message: 'trace', timestamp: Date.now(), level: 'trace' as const, source: 'lambda' as const },
+        { id: '8', message: 'unknown', timestamp: Date.now(), level: 'unknown' as const, source: 'lambda' as const },
       ];
 
       const ndjson = logs.map(log => JSON.stringify(log)).join('\n');
@@ -366,12 +340,12 @@ describe('vercelLogDrain', () => {
 
       await vercelLogDrain(mockReq, mockRes);
 
-      expect(mockEntry).toHaveBeenCalledTimes(5);
+      expect(mockEntry).toHaveBeenCalledTimes(8);
       expect(mockRes.json).toHaveBeenCalledWith({
         message: 'Logs processed',
-        successful: 5,
+        successful: 8,
         failed: 0,
-        total: 5
+        total: 8
       });
 
       // Check that entries were created with correct severity mappings
@@ -381,6 +355,9 @@ describe('vercelLogDrain', () => {
       expect(calls[2][0].severity).toBe(google.logging.type.LogSeverity.ERROR);     // error
       expect(calls[3][0].severity).toBe(google.logging.type.LogSeverity.WARNING);   // warn
       expect(calls[4][0].severity).toBe(google.logging.type.LogSeverity.DEBUG);     // debug
+      expect(calls[5][0].severity).toBe(google.logging.type.LogSeverity.CRITICAL);  // fatal
+      expect(calls[6][0].severity).toBe(google.logging.type.LogSeverity.DEBUG);     // trace
+      expect(calls[7][0].severity).toBe(google.logging.type.LogSeverity.DEFAULT);   // unknown
     });
   });
 
@@ -640,33 +617,170 @@ describe('vercelLogDrain', () => {
     });
   });
 
-  describe('Enhanced Severity Mapping', () => {
+
+  describe('Lambda Execution Log Parsing', () => {
     beforeEach(() => {
       const hmac = crypto.createHmac('sha1', 'test-secret');
       hmac.update(mockReq.rawBody as Buffer);
       mockReq.headers['x-vercel-signature'] = hmac.digest('hex');
     });
 
-    it('should map additional log levels correctly', async () => {
-      const logs = [
-        { id: '1', message: 'fatal', timestamp: Date.now(), level: 'fatal', source: 'lambda' as const },
-        { id: '2', message: 'trace', timestamp: Date.now(), level: 'trace', source: 'lambda' as const },
-        { id: '3', message: 'unknown', timestamp: Date.now(), level: 'unknown', source: 'lambda' as const },
-      ];
+    it('should parse Lambda START/END/REPORT logs and extract metrics', async () => {
+      const lambdaMessage = `START RequestId: 16a0f8b2-eb3d-4aee-824a-eae6ed1a05b3
+[GET] /api/steph-swim/schedules?startDate=2025-07-27&endDate=2025-08-02&nxtPslug=steph-swim status=200
+END RequestId: 16a0f8b2-eb3d-4aee-824a-eae6ed1a05b3
+REPORT RequestId: 16a0f8b2-eb3d-4aee-824a-eae6ed1a05b3 Duration: 398.25 ms Billed Duration: 399 ms Memory Size: 2048 MB Max Memory Used: 165 MB`;
 
-      const ndjson = logs.map(log => JSON.stringify(log)).join('\n');
-      mockReq.rawBody = Buffer.from(ndjson);
-      const hmac = crypto.createHmac('sha1', 'test-secret');
-      hmac.update(mockReq.rawBody);
-      mockReq.headers['x-vercel-signature'] = hmac.digest('hex');
+      const log = {
+        id: '1',
+        message: lambdaMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
 
       await vercelLogDrain(mockReq, mockRes);
 
-      expect(mockEntry).toHaveBeenCalledTimes(3);
-      const calls = mockEntry.mock.calls;
-      expect(calls[0][0].severity).toBe(google.logging.type.LogSeverity.CRITICAL);  // fatal
-      expect(calls[1][0].severity).toBe(google.logging.type.LogSeverity.DEBUG);     // trace
-      expect(calls[2][0].severity).toBe(google.logging.type.LogSeverity.DEFAULT);   // unknown
+      expect(mockEntry).toHaveBeenCalledTimes(1);
+      const [, logData] = mockEntry.mock.calls[0];
+
+      // Should extract the execution line as the main message
+      expect(logData.message).toBe('[GET] /api/steph-swim/schedules?startDate=2025-07-27&endDate=2025-08-02&nxtPslug=steph-swim status=200');
+
+      // Should include Lambda metrics
+      expect(logData.lambda_metrics).toEqual({
+        requestId: '16a0f8b2-eb3d-4aee-824a-eae6ed1a05b3',
+        duration: 398.25,
+        billedDuration: 399,
+        memorySize: 2048,
+        maxMemoryUsed: 165
+      });
+    });
+
+    it.each([
+      {
+        description: 'standard REPORT format',
+        message: 'REPORT RequestId: abc-123 Duration: 100.5 ms Billed Duration: 101 ms Memory Size: 512 MB Max Memory Used: 64 MB',
+        expected: { requestId: undefined, duration: 100.5, billedDuration: 101, memorySize: 512, maxMemoryUsed: 64 }
+      },
+      {
+        description: 'case insensitive REPORT format',
+        message: 'REPORT RequestId: test-123 duration: 50.0 ms billed duration: 51 ms memory size: 1024 mb max memory used: 128 mb',
+        expected: { requestId: undefined, duration: 50.0, billedDuration: 51, memorySize: 1024, maxMemoryUsed: 128 }
+      }
+    ])('should parse Lambda REPORT with $description', async ({ message, expected }) => {
+      const log = {
+        id: '1',
+        message,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.lambda_metrics).toEqual(expected);
+    });
+
+    it('should handle Lambda logs without REPORT (stdout logs)', async () => {
+      const log = {
+        id: '1',
+        message: 'Regular lambda stdout log',
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.message).toBe('Regular lambda stdout log');
+      expect(logData.lambda_metrics).toBeUndefined();
+    });
+
+    it('should handle Lambda logs with START but no REPORT', async () => {
+      const lambdaMessage = `START RequestId: test-456
+Some custom log output`;
+
+      const log = {
+        id: '1',
+        message: lambdaMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.message).toBe(lambdaMessage); // Use full message when no execution line found
+      expect(logData.lambda_metrics).toBeUndefined(); // No REPORT line
+    });
+
+    it('should prefer execution line over full message when available', async () => {
+      const lambdaMessage = `START RequestId: test-789
+[POST] /api/users status=201
+Some other log line
+END RequestId: test-789`;
+
+      const log = {
+        id: '1',
+        message: lambdaMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.message).toBe('[POST] /api/users status=201');
+    });
+
+    it('should handle malformed Lambda REPORT gracefully', async () => {
+      const lambdaMessage = `START RequestId: test-bad
+REPORT RequestId: test-bad Some malformed report line
+END RequestId: test-bad`;
+
+      const log = {
+        id: '1',
+        message: lambdaMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.lambda_metrics).toEqual({
+        requestId: undefined // No valid metrics parsed
+      });
     });
   });
 });

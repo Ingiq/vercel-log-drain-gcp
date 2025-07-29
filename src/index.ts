@@ -29,6 +29,13 @@ interface VercelLog {
 interface ParsedMessage {
   extractedMessage: string;
   structuredData?: Record<string, unknown>;
+  lambdaMetrics?: {
+    requestId?: string;
+    duration?: number;
+    billedDuration?: number;
+    memorySize?: number;
+    maxMemoryUsed?: number;
+  };
 }
 
 // Initialize Google Cloud Logging client
@@ -38,21 +45,61 @@ const logging = new Logging({ projectId: process.env.GOOGLE_CLOUD_PROJECT });
 const log = logging.log('vercel-logs'); // Define a specific log name in GCP
 
 /**
- * Extracts the most meaningful message from a Vercel log entry. If the message is a JSON object, it
- * will be parsed and the most meaningful message will be extracted from the message field.
- * @param vercelLog - The Vercel log entry to extract the message from.
+ * Parses Lambda execution logs to extract metrics and meaningful messages.
+ * @param message - The raw Lambda log message containing START/END/REPORT lines.
+ * @returns An object containing the extracted message and Lambda metrics.
+ */
+const parseLambdaMessage = (message: string): { extractedMessage: string; lambdaMetrics?: ParsedMessage['lambdaMetrics'] } => {
+  const lines = message.split('\n');
+  let extractedMessage = message;
+  let lambdaMetrics: ParsedMessage['lambdaMetrics'] | undefined;
+
+  // Extract request ID from START line
+  const startLine = lines.find(line => line.includes('START RequestId:'));
+  let requestId: string | undefined;
+  if (startLine) {
+    const match = startLine.match(/RequestId:\s+([a-f0-9-]+)/);
+    if (match) requestId = match[1];
+  }
+
+  // Parse REPORT line for metrics
+  const reportLine = lines.find(line => line.includes('REPORT'));
+  if (reportLine) {
+    lambdaMetrics = { requestId };
+    
+    const durationMatch = reportLine.match(/Duration:\s+(\d+(?:\.\d+)?)\s+ms/i);
+    if (durationMatch) lambdaMetrics.duration = parseFloat(durationMatch[1]);
+    
+    const billedMatch = reportLine.match(/Billed Duration:\s+(\d+)\s+ms/i);
+    if (billedMatch) lambdaMetrics.billedDuration = parseInt(billedMatch[1]);
+    
+    const memorySizeMatch = reportLine.match(/Memory Size:\s+(\d+)\s+MB/i);
+    if (memorySizeMatch) lambdaMetrics.memorySize = parseInt(memorySizeMatch[1]);
+    
+    const maxMemoryMatch = reportLine.match(/Max Memory Used:\s+(\d+)\s+MB/i);
+    if (maxMemoryMatch) lambdaMetrics.maxMemoryUsed = parseInt(maxMemoryMatch[1]);
+  }
+
+  // For multi-line lambda logs, extract the main execution line as the message
+  const executionLine = lines.find(line => line.match(/^\[GET\]|^\[POST\]|^\[PUT\]|^\[DELETE\]|^\[PATCH\]/));
+  if (executionLine) {
+    extractedMessage = executionLine;
+  }
+
+  return { extractedMessage, lambdaMetrics };
+};
+
+/**
+ * Parses JSON message format to extract structured data and meaningful message.
+ * @param message - The raw JSON message string.
  * @returns An object containing the extracted message and structured data.
  */
-const extractMessage = (vercelLog: VercelLog): ParsedMessage => {
-  let extractedMessage = vercelLog.message;
-  let structuredData: Record<string, unknown> | undefined;
-
-  // Try to parse the message field as JSON (common in stdout logs)
+const parseJsonMessage = (message: string): { extractedMessage: string; structuredData?: Record<string, unknown> } => {
   try {
-    const parsed = JSON.parse(vercelLog.message);
+    const parsed = JSON.parse(message);
     if (typeof parsed === 'object' && parsed !== null) {
-      structuredData = parsed;
-
+      let extractedMessage = message;
+      
       // Extract the most meaningful message from common fields
       if (typeof parsed.msg === 'string' && parsed.msg.trim()) {
         extractedMessage = parsed.msg;
@@ -60,17 +107,39 @@ const extractMessage = (vercelLog: VercelLog): ParsedMessage => {
         extractedMessage = parsed.message;
       } else if (typeof parsed.error === 'string' && parsed.error.trim()) {
         extractedMessage = parsed.error;
-      } else {
-        // If no clear message field, use the original message
-        extractedMessage = vercelLog.message;
       }
+
+      return { extractedMessage, structuredData: parsed };
     }
   } catch {
-    // If parsing fails, use the original message
-    extractedMessage = vercelLog.message;
+    // If JSON parsing fails, fall back to original message
+  }
+  
+  return { extractedMessage: message };
+};
+
+/**
+ * Extracts the most meaningful message from a Vercel log entry. Branches on message format
+ * to handle JSON vs Lambda execution logs appropriately.
+ * @param vercelLog - The Vercel log entry to extract the message from.
+ * @returns An object containing the extracted message, structured data, and Lambda metrics.
+ */
+const extractMessage = (vercelLog: VercelLog): ParsedMessage => {
+  const message = vercelLog.message.trim();
+  
+  // Branch on message format by checking first character
+  if (message.startsWith('{')) {
+    // JSON format - parse structured data
+    const { extractedMessage, structuredData } = parseJsonMessage(message);
+    return { extractedMessage, structuredData };
+  } else if (vercelLog.source === 'lambda' && (message.includes('START RequestId:') || message.includes('REPORT'))) {
+    // Lambda execution format - parse metrics
+    const { extractedMessage, lambdaMetrics } = parseLambdaMessage(message);
+    return { extractedMessage, lambdaMetrics };
   }
 
-  return { extractedMessage, structuredData };
+  // Default case - use message as-is
+  return { extractedMessage: message };
 };
 
 /**
@@ -178,8 +247,8 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
     try {
       const item: VercelLog = JSON.parse(line);
 
-      // Extract meaningful message and structured data
-      const { extractedMessage, structuredData } = extractMessage(item);
+      // Extract meaningful message, structured data, and Lambda metrics
+      const { extractedMessage, structuredData, lambdaMetrics } = extractMessage(item);
 
       // Create comprehensive labels for filtering
       const labels = createLabels(item);
@@ -200,6 +269,7 @@ export const vercelLogDrain: HttpFunction = async (req, res) => {
         vercel_source: item.source,
         ...(structuredData && { structured_data: structuredData }),
         ...(item.proxy && { proxy_data: item.proxy }),
+        ...(lambdaMetrics && { lambda_metrics: lambdaMetrics }),
       };
 
       entries.push(log.entry(metadata, logData));
