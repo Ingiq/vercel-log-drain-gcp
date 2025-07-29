@@ -44,6 +44,10 @@ interface ParsedMessage {
 const logging = new Logging({ projectId: process.env.GOOGLE_CLOUD_PROJECT });
 const log = logging.log('vercel-logs'); // Define a specific log name in GCP
 
+// Feature flags for parsing modes (enabled by default)
+const ENABLE_JSON_PARSING = process.env.ENABLE_JSON_PARSING !== 'false';
+const ENABLE_LAMBDA_PARSING = process.env.ENABLE_LAMBDA_PARSING !== 'false';
+
 /**
  * Parses Lambda execution logs to extract metrics and meaningful messages.
  * @param message - The raw Lambda log message containing START/END/REPORT lines.
@@ -66,16 +70,16 @@ const parseLambdaMessage = (message: string): { extractedMessage: string; lambda
   const reportLine = lines.find(line => line.includes('REPORT'));
   if (reportLine) {
     lambdaMetrics = { requestId };
-    
+
     const durationMatch = reportLine.match(/Duration:\s+(\d+(?:\.\d+)?)\s+ms/i);
     if (durationMatch) lambdaMetrics.duration = parseFloat(durationMatch[1]);
-    
+
     const billedMatch = reportLine.match(/Billed Duration:\s+(\d+)\s+ms/i);
     if (billedMatch) lambdaMetrics.billedDuration = parseInt(billedMatch[1]);
-    
+
     const memorySizeMatch = reportLine.match(/Memory Size:\s+(\d+)\s+MB/i);
     if (memorySizeMatch) lambdaMetrics.memorySize = parseInt(memorySizeMatch[1]);
-    
+
     const maxMemoryMatch = reportLine.match(/Max Memory Used:\s+(\d+)\s+MB/i);
     if (maxMemoryMatch) lambdaMetrics.maxMemoryUsed = parseInt(maxMemoryMatch[1]);
   }
@@ -99,7 +103,7 @@ const parseJsonMessage = (message: string): { extractedMessage: string; structur
     const parsed = JSON.parse(message);
     if (typeof parsed === 'object' && parsed !== null) {
       let extractedMessage = message;
-      
+
       // Extract the most meaningful message from common fields
       if (typeof parsed.msg === 'string' && parsed.msg.trim()) {
         extractedMessage = parsed.msg;
@@ -114,7 +118,7 @@ const parseJsonMessage = (message: string): { extractedMessage: string; structur
   } catch {
     // If JSON parsing fails, fall back to original message
   }
-  
+
   return { extractedMessage: message };
 };
 
@@ -126,13 +130,13 @@ const parseJsonMessage = (message: string): { extractedMessage: string; structur
  */
 const extractMessage = (vercelLog: VercelLog): ParsedMessage => {
   const message = vercelLog.message.trim();
-  
-  // Branch on message format by checking first character
-  if (message.startsWith('{')) {
+
+  // Branch on message format by checking first character and feature flags
+  if (ENABLE_JSON_PARSING && message.startsWith('{')) {
     // JSON format - parse structured data
     const { extractedMessage, structuredData } = parseJsonMessage(message);
     return { extractedMessage, structuredData };
-  } else if (vercelLog.source === 'lambda' && (message.includes('START RequestId:') || message.includes('REPORT'))) {
+  } else if (ENABLE_LAMBDA_PARSING && vercelLog.source === 'lambda' && (message.includes('START RequestId:') || message.includes('REPORT'))) {
     // Lambda execution format - parse metrics
     const { extractedMessage, lambdaMetrics } = parseLambdaMessage(message);
     return { extractedMessage, lambdaMetrics };

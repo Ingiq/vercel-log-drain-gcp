@@ -38,6 +38,10 @@ The main export is `vercelLogDrain`, an HTTP Cloud Function that:
 - `VERCEL_LOG_DRAIN_SECRET`: For HMAC signature validation
 - `GCP_PROJECT_ID`: Google Cloud project ID (optional, auto-detected in Cloud Functions)
 
+### Optional Environment Variables (Feature Flags)
+- `ENABLE_JSON_PARSING`: Enable/disable JSON message parsing (default: true, set to 'false' to disable)
+- `ENABLE_LAMBDA_PARSING`: Enable/disable Lambda execution log parsing (default: true, set to 'false' to disable)
+
 ### Log Processing Flow
 1. Raw request body is parsed as NDJSON (newline-delimited JSON)
 2. Each log line becomes a separate Google Cloud Logging entry

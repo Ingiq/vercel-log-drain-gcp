@@ -783,4 +783,112 @@ END RequestId: test-bad`;
       });
     });
   });
+
+  describe('Feature Flags', () => {
+    beforeEach(() => {
+      const hmac = crypto.createHmac('sha1', 'test-secret');
+      hmac.update(mockReq.rawBody as Buffer);
+      mockReq.headers['x-vercel-signature'] = hmac.digest('hex');
+    });
+
+    it('should skip JSON parsing when ENABLE_JSON_PARSING=false', async () => {
+      const originalValue = process.env.ENABLE_JSON_PARSING;
+      process.env.ENABLE_JSON_PARSING = 'false';
+
+      // Re-import to pick up the new environment variable
+      vi.resetModules();
+      const { vercelLogDrain } = await import('./index');
+
+      const structuredMessage = JSON.stringify({ msg: 'Should not be extracted', level: 'info' });
+      const log = {
+        id: '1',
+        message: structuredMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.message).toBe(structuredMessage); // Should use original JSON string
+      expect(logData.structured_data).toBeUndefined(); // Should not parse JSON
+
+      // Reset
+      process.env.ENABLE_JSON_PARSING = originalValue;
+    });
+
+    it('should skip Lambda parsing when ENABLE_LAMBDA_PARSING=false', async () => {
+      const originalValue = process.env.ENABLE_LAMBDA_PARSING;
+      process.env.ENABLE_LAMBDA_PARSING = 'false';
+
+      // Re-import to pick up the new environment variable
+      vi.resetModules();
+      const { vercelLogDrain } = await import('./index');
+
+      const lambdaMessage = `START RequestId: test-123
+REPORT RequestId: test-123 Duration: 100 ms Billed Duration: 101 ms Memory Size: 512 MB Max Memory Used: 64 MB`;
+
+      const log = {
+        id: '1',
+        message: lambdaMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.message).toBe(lambdaMessage); // Should use original message
+      expect(logData.lambda_metrics).toBeUndefined(); // Should not parse Lambda metrics
+
+      // Reset
+      process.env.ENABLE_LAMBDA_PARSING = originalValue;
+    });
+
+    it('should enable both parsers by default', async () => {
+      const originalJsonValue = process.env.ENABLE_JSON_PARSING;
+      const originalLambdaValue = process.env.ENABLE_LAMBDA_PARSING;
+
+      // Ensure environment variables are not set
+      delete process.env.ENABLE_JSON_PARSING;
+      delete process.env.ENABLE_LAMBDA_PARSING;
+
+      // Re-import to pick up the new environment variable
+      vi.resetModules();
+      const { vercelLogDrain } = await import('./index');
+
+      const structuredMessage = JSON.stringify({ msg: 'Should be extracted', level: 'info' });
+      const log = {
+        id: '1',
+        message: structuredMessage,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'lambda' as const
+      };
+
+      const { rawBody, signature } = createValidRequest(log);
+      mockReq.rawBody = rawBody;
+      mockReq.headers['x-vercel-signature'] = signature;
+
+      await vercelLogDrain(mockReq, mockRes);
+
+      const [, logData] = mockEntry.mock.calls[0];
+      expect(logData.message).toBe('Should be extracted'); // Should extract from JSON
+      expect(logData.structured_data).toBeDefined(); // Should parse JSON
+
+      // Reset
+      process.env.ENABLE_JSON_PARSING = originalJsonValue;
+      process.env.ENABLE_LAMBDA_PARSING = originalLambdaValue;
+    });
+  });
 });

@@ -32,6 +32,32 @@ This project implements a Vercel Log Drain that forwards logs from Vercel deploy
     *   `VERCEL_LOG_DRAIN_SECRET`: A secret key used to sign log payloads from Vercel.
     *   `GOOGLE_CLOUD_PROJECT`: Your Google Cloud Project ID where logs will be sent.
 
+## Configuration Options
+
+### Feature Flags (Optional)
+
+The log drain includes configurable parsing features that can be controlled via environment variables:
+
+```bash
+# Optional: Disable JSON message parsing (default: enabled)
+ENABLE_JSON_PARSING=false
+
+# Optional: Disable Lambda execution log parsing (default: enabled)  
+ENABLE_LAMBDA_PARSING=false
+```
+
+**`ENABLE_JSON_PARSING`** (default: `true`)
+- **When enabled**: Parses JSON-formatted log messages to extract structured data and meaningful messages from fields like `msg`, `message`, or `error`
+- **When disabled**: Uses the raw JSON string as the log message without parsing
+- **Use case**: Disable if you prefer raw JSON messages or experience parsing issues
+
+**`ENABLE_LAMBDA_PARSING`** (default: `true`)
+- **When enabled**: Parses AWS Lambda execution logs (START/END/REPORT format) to extract performance metrics like duration, memory usage, and request IDs
+- **When disabled**: Treats Lambda execution logs as plain text messages
+- **Use case**: Disable if you don't need Lambda metrics or want to reduce processing overhead
+
+Both features are **enabled by default**. To disable a feature, explicitly set the environment variable to `'false'`. Any other value (including unset) keeps the feature enabled.
+
 4.  **Google Cloud Authentication:**
 
     Ensure your Google Cloud environment is authenticated. For local development, you might need:
